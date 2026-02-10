@@ -1,0 +1,6 @@
+openai
+mistralai
+google-genai
+prettytable
+python-dotenv
+tqdm
