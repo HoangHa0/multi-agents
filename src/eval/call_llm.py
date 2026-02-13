@@ -8,7 +8,7 @@ import json
 import re
 import requests
 import time
-from typing import List, Optional
+from typing import Optional
 
 # Load environment variables
 load_dotenv()

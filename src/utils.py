@@ -1,36 +1,34 @@
 import os
+import re
 import time
 import json
 import random
 import threading
+from dotenv import load_dotenv
 from prettytable import PrettyTable 
-from pptree import Node
 from google import genai
 from google.genai import types
 from openai import OpenAI
 from mistralai import Mistral, SystemMessage, UserMessage, AssistantMessage
-from pptree import *
-import re
-import io
 
-# -----------------------
-# Mistral: round-robin API key rotation (retry with next key)
-# -----------------------
-# Supports: MISTRAL_API_KEY, MISTRAL_API_KEY_1..MISTRAL_API_KEY_10
-# (Keeps existing behavior when only one key is configured.)
+# -----------------------------------------
+# Mistral: round-robin API key rotation 
+# -----------------------------------------
+
+load_dotenv()
 
 _MISTRAL_API_KEYS = [
-    os.environ.get("MISTRAL_API_KEY"),
-    os.environ.get("MISTRAL_API_KEY_1"),
-    os.environ.get("MISTRAL_API_KEY_2"),
-    os.environ.get("MISTRAL_API_KEY_3"),
-    os.environ.get("MISTRAL_API_KEY_4"),
-    os.environ.get("MISTRAL_API_KEY_5"),
-    os.environ.get("MISTRAL_API_KEY_6"),
-    os.environ.get("MISTRAL_API_KEY_7"),
-    os.environ.get("MISTRAL_API_KEY_8"),
-    os.environ.get("MISTRAL_API_KEY_9"),
-    os.environ.get("MISTRAL_API_KEY_10"),
+    os.getenv("MISTRAL_API_KEY"),
+    os.getenv("MISTRAL_API_KEY_1"),
+    os.getenv("MISTRAL_API_KEY_2"),
+    os.getenv("MISTRAL_API_KEY_3"),
+    os.getenv("MISTRAL_API_KEY_4"),
+    os.getenv("MISTRAL_API_KEY_5"),
+    os.getenv("MISTRAL_API_KEY_6"),
+    os.getenv("MISTRAL_API_KEY_7"),
+    os.getenv("MISTRAL_API_KEY_8"),
+    os.getenv("MISTRAL_API_KEY_9"),
+    os.getenv("MISTRAL_API_KEY_10"),
 ]
 _MISTRAL_API_KEYS = [k for k in _MISTRAL_API_KEYS if k]
 
@@ -114,11 +112,16 @@ def _get_mistral_client():
             _MISTRAL_RR_CLIENT_SINGLETON = _MistralRoundRobinClient(_MISTRAL_API_KEYS)
     return _MISTRAL_RR_CLIENT_SINGLETON
 
+
+# -----------------------
+# Robustness helpers
+# -----------------------
+
 # Default no-op logger
 def _noop_log(msg):
     pass 
 
-# --- Model distribution helper ---
+# Model distribution helper
 def distribute_models(model_list, num_agents):
     """
     Distribute models equally among agents.
@@ -150,14 +153,12 @@ def distribute_models(model_list, num_agents):
     
     return distributed_models
 
-# --- Robust regex helpers (avoid brittle split/indexing on LLM outputs) ---
-_EXPERT_HIER_LINE_RE = re.compile(r'^\s*(?P<expert>.+?)(?:\s*-\s*Hierarchy:\s*(?P<hierarchy>.+))?\s*$', re.IGNORECASE)
+# Robust regex helpers 
+_EXPERT_LINE_RE = re.compile(r'^\s*(?P<expert>.+?)\s*$', re.IGNORECASE)
 _EXPERT_ROLE_DESC_RE = re.compile(r'^\s*(?:\d+\.\s*)?(?P<role>.+?)(?:\s*-\s*(?P<desc>.+))?\s*$')
 
-# -----------------------
-# Robustness helpers
-# -----------------------
-DEFAULT_LLM_RETRIES = int(os.environ.get("MDAGENTS_LLM_RETRIES", "5"))
+# Retry helper
+DEFAULT_LLM_RETRIES = 5
 
 def _retry_call(name, fn, max_tries=None, retry_exceptions=(IndexError,), sleep_s=None, log=None):
     if log is None:
@@ -194,6 +195,7 @@ def _retry_call(name, fn, max_tries=None, retry_exceptions=(IndexError,), sleep_
     # If still failing, raise the last error so caller can persist progress.
     raise last_err
 
+# API Call Tracker
 class SampleAPICallTracker:
     """
     Track API calls per sample by registering Agent instances created for
@@ -550,42 +552,16 @@ def create_question(sample, dataset):
         return question, None
     return sample['question'], None
 
-def determine_difficulty(question, difficulty, log=None, tracker=None):
-    if log is None:
-        log = _noop_log
-    
-    if difficulty != 'adaptive':
-        return difficulty, None
-    
-    difficulty_prompt = f"""Now, given the medical query as below, you need to decide the difficulty/complexity of it:\n{question}.\n\nPlease indicate the difficulty/complexity of the medical query among below options:\n1) basic: a single medical agent can output an answer.\n2) intermediate: number of medical experts with different expertise should dicuss and make final decision.\n3) advanced: multiple teams of clinicians from different departments need to collaborate with each other to make final decision."""
-    
-    moderator = Agent(
-        instruction='You are a medical expert who conducts initial assessment and your job is to decide the difficulty/complexity of the medical query.',
-        role='medical expert',
-        model_info='gpt-4o-mini',
-        tracker=tracker
-    )
-    response = moderator.chat(difficulty_prompt)
 
-    if 'basic' in response.lower() or '1)' in response.lower():
-        return 'basic', None
-    elif 'intermediate' in response.lower() or '2)' in response.lower():
-        return 'intermediate', moderator
-    elif 'advanced' in response.lower() or '3)' in response.lower():
-        return 'advanced', None
-    
-    return 'intermediate', None # Default fallback
-
-
-def process_intermediate_query(question, examplers, moderator, args, fewshot=None, log=None, tracker=None):
+def process_query(question, args, log=None, tracker=None):
     """
-    Intermediate (MDT) setting with a moderator feedback loop:
-      - Recruit N experts + hierarchy
+    Intermediate (MDT) setting:
+      - Recruit N experts 
       - Collect initial opinions
       - For each round:
           * participatory debate (agents optionally message each other)
           * agents update final answers for the round
-          * consensus check; if not reached, moderator reviews and provides per-agent feedback
+          * consensus check; if not reached, continue to next round
       - Final decision maker reviews all agent answers and produces the final answer
     """
     if log is None:
@@ -597,13 +573,13 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
         created_tracker = True
     
     # Create moderator if not provided (when difficulty is not 'adaptive')
-    if moderator is None:
-        moderator = Agent(
-            instruction='You are a medical expert who conducts initial assessment and moderates the discussion.',
-            role='moderator',
-            # model_info='gpt-4o-mini',
-            tracker=tracker
-        )
+
+    moderator = Agent(
+        instruction='You are a medical expert who conducts initial assessment and moderates the discussion.',
+        role='moderator',
+        # model_info='gpt-4o-mini',
+        tracker=tracker
+    )
     
     log("\n[INFO] Step 1. Expert Recruitment")
 
@@ -618,27 +594,24 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
             f"Question: {question}\n"
             f"You can recruit {num_agents} experts in different medical expertise. Considering the medical question and the options for the answer, "
             "what kind of experts will you recruit to better make an accurate answer?\n"
-            "Also, you need to specify the communication structure between experts "
-            "(e.g., Pulmonologist == Neonatologist == Medical Geneticist == Pediatrician > Cardiologist), or indicate if they are independent.\n\n"
             "For example, if you want to recruit five experts, you answer can be like:\n"
-            "1. Pediatrician - Specializes in the medical care of infants, children, and adolescents. - Hierarchy: Independent\n"
-            "2. Cardiologist - Focuses on the diagnosis and treatment of heart and blood vessel-related conditions. - Hierarchy: Pediatrician > Cardiologist\n"
-            "3. Pulmonologist - Specializes in the diagnosis and treatment of respiratory system disorders. - Hierarchy: Independent\n"
-            "4. Neonatologist - Focuses on the care of newborn infants, especially those who are born prematurely or have medical issues at birth. - Hierarchy: Independent\n"
-            "5. Medical Geneticist - Specializes in the study of genes and heredity. - Hierarchy: Independent\n\n"
+            "1. Pediatrician - Specializes in the medical care of infants, children, and adolescents.\n"
+            "2. Cardiologist - Focuses on the diagnosis and treatment of heart and blood vessel-related conditions.\n"
+            "3. Pulmonologist - Specializes in the diagnosis and treatment of respiratory system disorders.\n"
+            "4. Neonatologist - Focuses on the care of newborn infants, especially those who are born prematurely or have medical issues at birth.\n"
+            "5. Medical Geneticist - Specializes in the study of genes and heredity.\n\n"
             "Please answer in above format, and do not include your reason."
         )
-        # log(f"[DEBUG] Recruited Experts and Hierarchy:\n{recruited}")
+        # log(f"[DEBUG] Recruited Experts:\n{recruited}")
 
         agents_data = []
         for _line in re.findall(r'[^\n]+', recruited or ''):
             _line = _line.strip()
             if not _line:
                 continue
-            m = _EXPERT_HIER_LINE_RE.match(_line)
+            m = _EXPERT_LINE_RE.match(_line)
             expert_txt = (m.group('expert') if m else _line).strip()
-            hierarchy_txt = (m.group('hierarchy').strip() if (m and m.group('hierarchy')) else None)
-            agents_data.append((expert_txt, hierarchy_txt))
+            agents_data.append(expert_txt)
 
         if not agents_data:
             raise IndexError('No experts parsed from recruitment output')
@@ -654,8 +627,8 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
 
     agent_list = ""
     for i, agent in enumerate(agents_data):
-        m = _EXPERT_ROLE_DESC_RE.match(agent[0] or '')
-        agent_role = (m.group('role') if m else (agent[0] or '')).strip().lower()
+        m = _EXPERT_ROLE_DESC_RE.match(agent or '')
+        agent_role = (m.group('role') if m else (agent or '')).strip().lower()
         description = ((m.group('desc') or '') if m else '').strip().lower()
         agent_list += f"Agent {i+1}: {agent_role} - {description}\n"
 
@@ -664,7 +637,7 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
 
     agent_dict = {}
     medical_agents = []
-    for idx, (agent, _) in enumerate(agents_data):
+    for idx, agent in enumerate(agents_data):
         m = _EXPERT_ROLE_DESC_RE.match(agent or '')
         agent_role = (m.group('role') if m else (agent or '')).strip().lower()
         description = ((m.group('desc') or '') if m else '').strip().lower()
@@ -674,7 +647,7 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
         agent_dict[agent_role] = _agent
         medical_agents.append(_agent)
 
-    for idx, (agent, _) in enumerate(agents_data):
+    for idx, agent in enumerate(agents_data):
         m = _EXPERT_ROLE_DESC_RE.match(agent or '')
         role_txt = (m.group('role') if m else (agent or '')).strip()
         desc_txt = ((m.group('desc') or '') if m else '').strip()
@@ -682,30 +655,9 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
             log(f"Agent {idx+1} ({agent_emoji[idx]} {role_txt}): {desc_txt}")
         else:
             log(f"Agent {idx+1} ({agent_emoji[idx]}): {role_txt}")
+            
 
-    # Few-shot prompting is only used in the low-complexity (basic) setting in the paper.
-    # Keep intermediate as zero-shot by default.
-    fewshot_examplers = ""
-    if fewshot is not None and fewshot > 0:
-        medical_agent = Agent(instruction='You are a helpful medical agent.', role='medical expert', tracker=tracker)
-        random.shuffle(examplers)
-        for ie, exampler in enumerate(examplers[:fewshot]):
-            exampler_question = f"[Example {ie+1}]\n" + exampler['question']
-            options = [f"({k}) {v}" for k, v in exampler['options'].items()]
-            random.shuffle(options)
-
-            exampler_question += " " + ' '.join(options)
-            exampler_answer = f"Answer: ({exampler['answer_idx']}) {exampler['answer']}"
-            exampler_reason = medical_agent.chat(
-                "Below is an example of medical knowledge question and answer. After reviewing the below medical question and answering, "
-                "can you provide 1-2 sentences of reason that support the answer as you didn't know the answer ahead?\n\n"
-                f"Question: {exampler_question}\n\nAnswer: {exampler_answer}"
-            )
-
-            exampler_question += f"\n{exampler_answer}\n{exampler_reason}\n\n"
-            fewshot_examplers += exampler_question
-
-    # Moderator (feedback loop + consensus checking)
+    # Moderator (consensus checking)
     moderator_prompt = (
         "You are now a moderator in a multidisciplinary medical team discussion. "
         "Your job is to moderate the discussion, check whether the team has reached consensus, "
@@ -717,9 +669,8 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
     num_turns = 5
 
     # Logs
-    # interaction_log[round_name][turn_name]['Agent i']['Agent j'] = message
-    interaction_log = {}
-    feedback_log = {}  # feedback_log[round_name][role] = feedback
+    interaction_log = {} # interaction_log[round_name][turn_name]['Agent i']['Agent j'] = message
+    feedback_log = {} # feedback_log[round_name][role] = feedback
 
     # Helper function to print summary table
     def _print_summary_table(turn_data, n_agents):
@@ -773,8 +724,7 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
     opinions = {}
     for idx, agent in enumerate(medical_agents):
         prompt = (
-            (f"Given the examplers, please return your answer to the medical query among the option provided.\n\n"
-             f"{fewshot_examplers}\n\n" if fewshot_examplers else "") +
+            f"Please return your answer to the medical query among the option provided.\n\n"
             f"Question: {question}\n\n"
         )
         resp = agent.chat(prompt, img_path=None)
@@ -798,45 +748,6 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
         # Participatory debate (T turns)
         log("[INFO] Participatory Debate")
         
-        # Build list of valid communication partners based on hierarchy
-        def _get_valid_partners(agent_idx, hierarchy_map):
-            """
-            Get list of agents that this agent can communicate with based on hierarchy.
-            An agent can communicate with:
-            - Its parent (if it has one)
-            - Its children (if it has any)
-            - Its siblings (agents with the same parent)
-            
-            Special case: Agents with parent=None are direct children of Moderator.
-            They should be able to talk to each other (as siblings under Moderator).
-            """
-            valid = []
-            hm = hierarchy_map.get(agent_idx, {})
-            
-            # Can talk to parent
-            if hm.get("parent") is not None:
-                valid.append(hm["parent"])
-            
-            # Can talk to children
-            if hm.get("children"):
-                valid.extend(hm["children"])
-            
-            # Can talk to siblings (other children of the same parent)
-            if hm.get("parent") is not None:
-                # Normal case: agent has a parent agent
-                parent_idx = hm["parent"]
-                parent_hm = hierarchy_map.get(parent_idx, {})
-                siblings = [s for s in parent_hm.get("children", []) if s != agent_idx]
-                valid.extend(siblings)
-            else:
-                # Special case: agent is directly under Moderator (parent=None)
-                # Find all other agents that are also directly under Moderator (siblings)
-                moderator_level_siblings = [idx for idx in range(len(hierarchy_map)) 
-                                           if idx != agent_idx and hierarchy_map[idx].get("parent") is None]
-                valid.extend(moderator_level_siblings)
-            
-            return valid
-        
         num_yes_total = 0
         for t in range(1, num_turns + 1):
             turn_name = f"Turn {t}"
@@ -852,32 +763,25 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
                     img_path=None
                 )
 
-                if re.search(r'(?i)\byes\b', (participate or "").strip()):
-                    # Get valid communication partners based on hierarchy
-                    valid_partners = _get_valid_partners(idx, hierarchy_map)
-                    
-                    if not valid_partners:
-                        # No valid partners in hierarchy, skip communication
-                        log(f" Agent {idx+1} ({agent_emoji[idx]} {agent.role}): No valid partners in hierarchy")
-                        continue
-                    
-                    # Build filtered agent list showing only valid partners
+                if re.search(r'(?i)\byes\b', (participate or "").strip()):                    
+                    # Build filtered agent list (not including self)
                     filtered_agent_list = ""
                     for i, agent_data in enumerate(agents_data):
-                        if i in valid_partners:
-                            m = _EXPERT_ROLE_DESC_RE.match(agent_data[0] or '')
-                            agent_role = (m.group('role') if m else (agent_data[0] or '')).strip().lower()
-                            description = ((m.group('desc') or '') if m else '').strip().lower()
-                            filtered_agent_list += f"Agent {i+1}: {agent_role} - {description}\n"
+                        if i == idx:  # Skip the current agent
+                            continue
+                        m = _EXPERT_ROLE_DESC_RE.match(agent_data or '')
+                        agent_role = (m.group('role') if m else (agent_data or '')).strip().lower()
+                        description = ((m.group('desc') or '') if m else '').strip().lower()
+                        filtered_agent_list += f"Agent {i+1}: {agent_role} - {description}\n"
                     
                     chosen_expert = agent.chat(
-                        "Next, indicate the agent(s) you want to talk to (only from your team hierarchy).\n"
+                        "Next, indicate the agent(s) you want to talk to.\n"
                         f"{filtered_agent_list}\n"
                         "Return ONLY the number(s), e.g., 1 or 1,2. Do not include reasons.",
                         img_path=None
                     )
                     chosen_experts = [int(ce) for ce in re.split(r'[^0-9]+', chosen_expert or '') if ce.strip().isdigit()]
-                    chosen_experts = [ce for ce in chosen_experts if 1 <= ce <= len(medical_agents) and (ce - 1) in valid_partners]
+                    chosen_experts = [ce for ce in chosen_experts if 1 <= ce <= len(medical_agents)-1 and ce != (idx + 1)]  # valid and not self
                     chosen_experts = list(dict.fromkeys(chosen_experts))  # unique, preserve order
 
                     for ce in chosen_experts:
@@ -981,7 +885,6 @@ def process_intermediate_query(question, examplers, moderator, args, fewshot=Non
         # If majority say NO, then we stop regardless of consensus
         if continue_votes <= len(medical_agents) // 2:
             log("\n[INFO] Agents voted to stop discussion.")
-            round_feedback = {}
             break
         
         log(f"\n[DEBUG] Current agent chat history for {round_name}:\n" + 
