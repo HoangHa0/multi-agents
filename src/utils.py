@@ -223,6 +223,43 @@ class SampleAPICallTracker:
         with self._lock:
             return [(getattr(a, 'role', 'unknown'), getattr(a, 'api_calls', 0)) for a in self._agents]
 
+
+# -----------------
+# Data loading
+# -----------------
+
+def load_data(dataset):
+    test_qa = []
+    examplers = []
+
+    test_path = f'data/{dataset}/test.jsonl'
+    with open(test_path, 'r') as file:
+        for line in file:
+            test_qa.append(json.loads(line))
+
+    train_path = f'data/{dataset}/train.jsonl'
+    with open(train_path, 'r') as file:
+        for line in file:
+            examplers.append(json.loads(line))
+
+    return test_qa, examplers
+
+def create_question(sample, dataset):
+    if dataset == 'medqa':
+        question = sample['question'] + " Options: "
+        options = []
+        for k, v in sample['options'].items():
+            options.append("({}) {}".format(k, v))
+        random.shuffle(options)
+        question += " ".join(options)
+        return question, None
+    return sample['question'], None
+
+
+# -----------------------
+# Main implementation
+# -----------------------
+
 class Agent:
     # Class-level counter for total API calls across all agents
     total_api_calls = 0
@@ -514,44 +551,6 @@ def parse_group_info(group_info):
                 })
     
     return parsed_info
-
-def setup_model(model_name):
-    if 'gemini' in model_name:
-        client = genai.Client(api_key=os.environ['genai_api_key'])
-        return client, None
-    elif 'gpt' in model_name:
-        client = OpenAI(api_key=os.environ['openai_api_key'])
-        return None, client
-    else:
-        raise ValueError(f"Unsupported model: {model_name}")
-
-def load_data(dataset):
-    test_qa = []
-    examplers = []
-
-    test_path = f'data/{dataset}/test.jsonl'
-    with open(test_path, 'r') as file:
-        for line in file:
-            test_qa.append(json.loads(line))
-
-    train_path = f'data/{dataset}/train.jsonl'
-    with open(train_path, 'r') as file:
-        for line in file:
-            examplers.append(json.loads(line))
-
-    return test_qa, examplers
-
-def create_question(sample, dataset):
-    if dataset == 'medqa':
-        question = sample['question'] + " Options: "
-        options = []
-        for k, v in sample['options'].items():
-            options.append("({}) {}".format(k, v))
-        random.shuffle(options)
-        question += " ".join(options)
-        return question, None
-    return sample['question'], None
-
 
 def process_query(question, args, log=None, tracker=None):
     """
