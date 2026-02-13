@@ -8,8 +8,9 @@ import threading
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from utils import load_data, create_question
-from moa import SYNTHESIZE_PROMPT, run_moa
+from src.data.load_questions import load_data, create_question
+from src.utils.logging import Logger, _atomic_json_dump, make_log_func
+from src.models.moa import SYNTHESIZE_PROMPT, run_moa
  
 # ==============================
 # Layer Configuration
@@ -31,50 +32,18 @@ PROPOSER_LAYERS = [
 AGGREGATOR = {"provider": "mistral", "model": "mistral-large-2512", "temperature": 0.0, "max_tokens": 2048}
 
 # ==============================
-# Logging and Output Management
+# Output Management
 # ==============================
 
 # Thread-safe lock for results and file operations
 results_lock = threading.Lock()
 file_lock = threading.Lock()
 
-# Logger class for logging to both console and file
-class Logger(object):
-    def __init__(self, filename):
-        self.terminal = sys.stdout
-        self.log = open(filename, "a")
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.log.write(message)
-
-    def flush(self):
-        self.terminal.flush()
-        self.log.flush()
-
-def _atomic_json_dump(obj, path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp_path = path + ".tmp"
-    with open(tmp_path, 'w') as f:
-        json.dump(obj, f, indent=4)
-    os.replace(tmp_path, path)
-    
-def make_log_func(multithread, log_lines=None):
-    """
-    Returns a log function:
-      - multithread=True: appends to log_lines list (no terminal output)
-      - multithread=False: acts like print() (terminal output captured by Logger)
-    """
-    if multithread:
-        def log(msg):
-            log_lines.append(str(msg))
-        return log
-    else:
-        return print
 
 # ==============================
 # Main Execution Loop
 # ==============================
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', default='medqa', type=str)

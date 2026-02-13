@@ -252,7 +252,7 @@ def call(agent: Dict[str, Any], system_prompt: str, user_prompt: str) -> str:
 
 
 # ============================
-# MoA
+# MoA Implementation
 # ============================
 
 def run_layer(
