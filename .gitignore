@@ -12,3 +12,4 @@ __pypackages__/
 
 # Others
 .notes
+src/test.py
