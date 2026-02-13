@@ -12,4 +12,4 @@ __pypackages__/
 
 # Others
 .notes
-src/test.py
+src/run/test.py

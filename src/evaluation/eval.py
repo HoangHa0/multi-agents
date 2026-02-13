@@ -7,7 +7,7 @@ import random
 from prettytable import PrettyTable
 
 try:
-    from evaluaton.call_llm import ask
+    from evaluation.call_llm import ask
 except ImportError:
     from call_llm import ask
 
