@@ -8,6 +8,7 @@ from src.models.helpers import (
     get_gemini_client,
     noop_log,
     remove_mistral_thinking,
+    SampleAPICallTracker,
 )
 from src.prompts.system_prompts import (
     ELIMINATION_STRATEGIST,
@@ -70,7 +71,7 @@ Quality guardrails:
 # Provider calls
 # ==========================
 
-def _call_mistral(agent: Dict[str, Any], user_prompt: str, system_prompt: str) -> str:
+def _call_mistral(agent: Dict[str, Any], user_prompt: str, system_prompt: str):
     client = get_mistral_client()
     resp = client.chat.complete(
         model=agent["model"],
@@ -80,7 +81,6 @@ def _call_mistral(agent: Dict[str, Any], user_prompt: str, system_prompt: str) -
         ],
         temperature=agent.get("temperature", 0.7),
     )
-    
     return remove_mistral_thinking(resp.choices[0].message.content)
 
 def _call_openai(agent: Dict[str, Any], user_prompt: str, system_prompt: str) -> str:
@@ -111,7 +111,7 @@ def _call_gemini(agent: Dict[str, Any], user_prompt: str, system_prompt: str) ->
     )
     return resp.text
 
-def call(agent: Dict[str, Any], system_prompt: str, user_prompt: str) -> str:
+def call(agent: Dict[str, Any], system_prompt: str, user_prompt: str, tracker=None) -> str:
     """Single call with exponential-backoff retry.
 
     Agent fields:
@@ -126,12 +126,22 @@ def call(agent: Dict[str, Any], system_prompt: str, user_prompt: str) -> str:
     for attempt in range(max_retries):
         try:
             if provider == "mistral":
-                return _call_mistral(agent, user_prompt, system_prompt)
-            if provider == "openai":
-                return _call_openai(agent, user_prompt, system_prompt)
-            if provider == "gemini":
-                return _call_gemini(agent, user_prompt, system_prompt)
-            raise ValueError(f"Unknown provider={provider!r}")
+                resp = _call_mistral(agent, user_prompt, system_prompt)
+            elif provider == "openai":
+                resp = _call_openai(agent, user_prompt, system_prompt)
+            elif provider == "gemini":
+                resp = _call_gemini(agent, user_prompt, system_prompt)
+            else:
+                raise ValueError(f"Unknown provider={provider!r}")
+
+            # API tracking for this call (if tracker provided)
+            try:
+                if tracker is not None:
+                    tracker.register_call(1)
+            except Exception:
+                pass
+
+            return resp
 
         except Exception:
             if attempt == max_retries - 1:
@@ -160,8 +170,9 @@ def run_layer(
     agents: List[Dict[str, Any]],
     layer_system: Optional[str],
     user_prompt: str,
+    tracker=None,
 ) -> List[str]:
-    return [call(a, layer_system or a.get("system", ""), user_prompt) for a in agents]
+    return [call(a, layer_system or a.get("system", ""), user_prompt, tracker=tracker) for a in agents]
 
 def run_moa(
     question: str,
@@ -170,6 +181,7 @@ def run_moa(
     debate_prompt: str = DEBATE_REQUIREMENT_PROMPT,
     return_intermediate: bool = False,
     log: Any = noop_log,
+    tracker=None,
 ) -> str | tuple[str, List[List[str]]]:
     """
     MoA with customized per-layer, per-agent providers/models.
@@ -177,7 +189,12 @@ def run_moa(
     all_layer_results: List[List[str]] = []
 
     # Layer 1 - Investigation
-    results = run_layer(proposer_layers[0], None, question)
+    created_tracker = False
+    if tracker is None:
+        tracker = SampleAPICallTracker()
+        created_tracker = True
+
+    results = run_layer(proposer_layers[0], None, question, tracker=tracker)
     all_layer_results.append(results)
     
     log(f"\n[INFO] LAYER 1: INVESTIGATION")
@@ -192,14 +209,20 @@ def run_moa(
         question=question,
         aggregators=aggregators, 
         user_query=user_query,
-        log=log
+        log=log,
+        tracker=tracker,
     )
-    
-    log(f"\n[INFO] Final answer:\n{final_decision}\n")
-    
+        
     if return_intermediate:
         return final_decision, all_layer_results
-    
+
+    # Optionally log total API calls for this sample when we created the tracker
+    if created_tracker:
+        try:
+            log(f"\n[INFO] API calls (this sample): {tracker.total_calls()}")
+        except Exception:
+            pass
+
     return final_decision
 
 

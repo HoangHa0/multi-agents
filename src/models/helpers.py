@@ -199,11 +199,61 @@ def remove_mistral_thinking(content: Any) -> str:
 	return str(content)
 
 
+# -------------------------------
+# API Call Tracker
+# -------------------------------
+
+class SampleAPICallTracker:
+    """
+    Track API calls per sample by registering Agent instances created and
+    raw calls for that sample and summing their per-instance counters. 
+    This avoids cross-thread contamination from a global total.
+    """
+    def __init__(self):
+        self._agents = []
+        self._lock = threading.Lock()
+        self._raw_calls = 0
+
+    def register_agent(self, agent):
+        if agent is None:
+            return
+        with self._lock:
+            self._agents.append(agent)
+
+    register = register_agent
+
+    def total_calls(self):
+        with self._lock:
+            return sum(getattr(a, 'api_calls', 0) for a in self._agents)
+
+    def breakdown(self):
+        with self._lock:
+            return [(getattr(a, 'role', 'unknown'), getattr(a, 'api_calls', 0)) for a in self._agents]
+
+    def register_call(self, n: int = 1):
+        """Register raw API calls that are not associated with Agent instances (e.g., investigation layer)."""
+        with self._lock:
+            try:
+                self._raw_calls += int(n)
+            except Exception:
+                self._raw_calls += 1
+
+    def raw_calls(self) -> int:
+        with self._lock:
+            return int(self._raw_calls)
+
+    def total_calls(self):
+        """Total calls including registered Agent instances and raw calls."""
+        with self._lock:
+            return sum(getattr(a, 'api_calls', 0) for a in self._agents) + int(self._raw_calls)
+
+
 __all__ = [
     "get_mistral_client",
     "get_openai_client",
     "get_gemini_client",
     "noop_log",
-    "remove_mistral_thinking",    
+    "remove_mistral_thinking",
+    "SampleAPICallTracker",    
 ]
 

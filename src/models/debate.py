@@ -13,7 +13,8 @@ from mistralai import SystemMessage, UserMessage, AssistantMessage
 from src.models.helpers import (
     noop_log,
     get_mistral_client,
-    remove_mistral_thinking
+    remove_mistral_thinking,
+    SampleAPICallTracker
 )
 
 
@@ -61,33 +62,6 @@ def _retry_call(name, fn, max_tries=None, retry_exceptions=(IndexError,), sleep_
                     pass
     # If still failing, raise the last error so caller can persist progress.
     raise last_err
-
-# API Call Tracker
-class SampleAPICallTracker:
-    """
-    Track API calls per sample by registering Agent instances created for
-    that sample and summing their per-instance counters. This avoids
-    cross-thread contamination from a global total.
-    """
-    def __init__(self):
-        self._agents = []
-        self._lock = threading.Lock()
-
-    def register_agent(self, agent):
-        if agent is None:
-            return
-        with self._lock:
-            self._agents.append(agent)
-
-    register = register_agent
-
-    def total_calls(self):
-        with self._lock:
-            return sum(getattr(a, 'api_calls', 0) for a in self._agents)
-
-    def breakdown(self):
-        with self._lock:
-            return [(getattr(a, 'role', 'unknown'), getattr(a, 'api_calls', 0)) for a in self._agents]
 
 
 # -----------------------
@@ -392,7 +366,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
     
     moderator = Agent(
         instruction='You are a medical expert who conducts initial assessment and moderates the discussion.',
-        role='moderator',
+        role='Moderator',
         # model_info='gpt-4o-mini',
         tracker=tracker
     )
@@ -403,7 +377,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
 
     def _recruit_and_parse_intermediate():
         recruiter = Agent(instruction="You are an experienced medical expert who recruits a group of experts with diverse identity and ask them to discuss and solve the given medical query.", 
-                role='recruiter', 
+                role='Recruiter', 
                 # model_info='gpt-4o-mini',
                 tracker=tracker)
         recruited = recruiter.chat(
@@ -441,13 +415,6 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
     agent_emoji = ['\U0001F468\u200D\u2695\uFE0F', '\U0001F468\U0001F3FB\u200D\u2695\uFE0F', '\U0001F469\U0001F3FC\u200D\u2695\uFE0F', '\U0001F469\U0001F3FB\u200D\u2695\uFE0F', '\U0001f9d1\u200D\u2695\uFE0F', '\U0001f9d1\U0001f3ff\u200D\u2695\uFE0F', '\U0001f468\U0001f3ff\u200D\u2695\uFE0F', '\U0001f468\U0001f3fd\u200D\u2695\uFE0F', '\U0001f9d1\U0001f3fd\u200D\u2695\uFE0F', '\U0001F468\U0001F3FD\u200D\u2695\uFE0F']
     random.shuffle(agent_emoji)
 
-    agent_list = ""
-    for i, agent in enumerate(agents_data):
-        m = _EXPERT_ROLE_DESC_RE.match(agent or '')
-        agent_role = (m.group('role') if m else (agent or '')).strip().lower()
-        description = ((m.group('desc') or '') if m else '').strip().lower()
-        agent_list += f"Agent {i+1}: {agent_role} - {description}\n"
-
     # Agent models
     agent_provider = [aggregator["provider"] for aggregator in aggregators]
     agent_models = [aggregator["model"] for aggregator in aggregators]
@@ -456,24 +423,19 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
     medical_agents = []
     for idx, agent in enumerate(agents_data):
         m = _EXPERT_ROLE_DESC_RE.match(agent or '')
-        agent_role = (m.group('role') if m else (agent or '')).strip().lower()
+        agent_role = (m.group('role') if m else (agent or '')).strip()
         description = ((m.group('desc') or '') if m else '').strip().lower()
 
         inst_prompt = f"[ROLE]\nYou are a {agent_role} who {description}. Your job is to collaborate with other medical experts in a team.\n" + user_query
         _agent = Agent(instruction=inst_prompt, role=agent_role, provider=agent_provider[idx], model_info=agent_models[idx], tracker=tracker)
         agent_dict[agent_role] = _agent
         medical_agents.append(_agent)
-
-    for idx, agent in enumerate(agents_data):
-        m = _EXPERT_ROLE_DESC_RE.match(agent or '')
-        role_txt = (m.group('role') if m else (agent or '')).strip()
-        desc_txt = ((m.group('desc') or '') if m else '').strip()
-        if desc_txt:
-            log(f"Agent {idx+1} ({agent_emoji[idx]} {role_txt}): {desc_txt}")
+        
+        if description:
+            log(f"Agent {idx+1} ({agent_emoji[idx]} {agent_role}): {description.capitalize()}")
         else:
-            log(f"Agent {idx+1} ({agent_emoji[idx]}): {role_txt}")
+            log(f"Agent {idx+1} ({agent_emoji[idx]}): {agent_role}")
             
-
     # Moderator (consensus checking)
     moderator_prompt = (
         "You are now a moderator in a multidisciplinary medical team discussion. "
@@ -624,11 +586,11 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
                     # "NO" path
                     log(f" Agent {idx+1} ({agent_emoji[idx]} {agent.role}): \U0001F910")
                 
-            log(f"\n[DEBUG] Current agent chat history for {round_name}, {turn_name}:\n" + 
-                "\n".join([f"{idx}. {agent.role} history:\n{agent.messages}" for idx, agent in enumerate(medical_agents)]))
+            # log(f"\n[DEBUG] Current agent chat history for {round_name}, {turn_name}:\n" + 
+            #     "\n".join([f"Agent {idx+1} ({agent_emoji[idx]} {agent.role})'s history:\n{agent.messages}" for idx, agent in enumerate(medical_agents)]))
                 
             if num_yes == 0:
-                log(" No agents chose to participate in this turn. End this turn.")
+                log("\n No agents chose to participate in this turn. End this turn.")
                 break
 
             # Print summary table for this turn only
@@ -636,7 +598,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
             _print_summary_table(interaction_log[round_name][turn_name], len(medical_agents))
 
         if num_yes_total == 0:
-            log(" No agents chose to participate in this round. End this round.")
+            log("\n No agents chose to participate in this round. End this round.")
             break
         
         # Agents update final answers for this round
@@ -653,6 +615,12 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
             tmp_final_answer[agent.role] = response
 
         final_answers = tmp_final_answer
+        
+        log(f"\n[INFO] End of {round_name} chat opinions:\n" +
+            "\n".join([f"Agent {idx+1} ({agent_emoji[idx]} {agent.role})'s opinion:\n{tmp_final_answer[agent.role]}" for idx, agent in enumerate(medical_agents)]))
+        
+        log(f"\n[DEBUG] Current agent chat history for {round_name}:\n" + 
+            "\n".join([f"Agent {idx+1} ({agent_emoji[idx]} {agent.role})'s history:\n{agent.messages}" for idx, agent in enumerate(medical_agents)]))
         
         # Moderator consensus check (moderator decides if another round is needed)
         log("\n[INFO] Moderator Consensus Check")
@@ -684,8 +652,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
             log("\n[INFO] Consensus reached! Ending discussion.")
             break
 
-        # Early stopping mechanism
-        # Check if agents agree to continue
+        # Early stopping mechanism: Check if agents agree to continue
         log("\n[INFO] Vote to continue discussion")
         continue_votes = 0
         for agent in medical_agents:
@@ -705,24 +672,18 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
             log("\n[INFO] Agents voted to stop discussion.")
             break
         
-        log(f"\n[DEBUG] Current agent chat history for {round_name}:\n" + 
-            "\n".join([f"{idx}. {agent.role} history:\n{agent.messages}" for idx, agent in enumerate(medical_agents)]))
-
-        # Moderator provides feedback for next round if not converged
+        # Opinions not converged, continue to next round with updated opinions
         log("\n[INFO] Disagreement detected")
 
         # Next round starts from the agents' last answers
         opinions = dict(final_answers)
-        
-        log(f"\n[DEBUG] End of {round_name} chat opinions:\n" +
-            "\n".join([f"{idx}. {agent.role} opinion:\n{opinions[agent.role]}" for idx, agent in enumerate(medical_agents)]))
 
     # Final decision maker (review all opinions)
     log("\n[INFO] Step 4. Final Decision")
 
     decision_maker = Agent(
         "You are a final medical decision maker who reviews all opinions from different medical experts and their conversation history to make the final decision.",
-        role='decision maker',
+        role='Decision Maker',
         tracker=tracker
     )
     
@@ -756,7 +717,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
     
     if created_tracker:
         try:
-            log(f"[INFO] API calls (this sample): {tracker.total_calls()}")
+            log(f"\n[INFO] API calls (this sample): {tracker.total_calls()}")
         except Exception:
             pass
 
