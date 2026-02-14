@@ -15,7 +15,14 @@ if PROJECT_ROOT not in sys.path:
 
 from src.data.load_questions import load_data, create_question
 from src.utils.logging import Logger, _atomic_json_dump, make_log_func
-from src.models.moa import SYNTHESIZE_PROMPT, run_moa
+from src.prompts.system_prompts import (
+    ELIMINATION_STRATEGIST, 
+    FORWARD_CHAINING_CLINICIAN, 
+    MECHANISM_AUDITOR, 
+    GUIDELINE_CLINICIAN, 
+    SKEPTIC_CONTRARIAN
+)
+from src.models.moa import run_moa
 from src.models.helpers import SampleAPICallTracker
   
     
@@ -23,20 +30,22 @@ from src.models.helpers import SampleAPICallTracker
 # Layer Configuration
 # ==============================
 
-AGENTS = [
-    {"provider": "mistral", "model": "mistral-small-2506", "temperature": 0.7},
-    {"provider": "mistral", "model": "ministral-14b-2512", "temperature": 0.7},
-    {"provider": "mistral", "model": "ministral-8b-2512", "temperature": 0.7},
-    {"provider": "mistral", "model": "ministral-3b-2512", "temperature": 0.7},
-]
-
 PROPOSER_LAYERS = [
-    AGENTS,  # Layer 1
-    AGENTS,  # Layer 2
+    [   # Layer 1 
+        {"provider": "mistral", "model": "mistral-small-2506", "temperature": 0.7, "system": ELIMINATION_STRATEGIST},
+        {"provider": "mistral", "model": "mistral-medium-2508", "temperature": 0.7, "system": FORWARD_CHAINING_CLINICIAN},
+        {"provider": "mistral", "model": "ministral-3b-2512", "temperature": 0.7, "system": MECHANISM_AUDITOR},
+        {"provider": "mistral", "model": "ministral-8b-2512", "temperature": 0.7, "system": GUIDELINE_CLINICIAN},
+        {"provider": "mistral", "model": "magistral-small-2509", "temperature": 0.7, "system": SKEPTIC_CONTRARIAN},
+    ],
 ]
 
-# Layer 3
-AGGREGATOR = {"provider": "mistral", "model": "mistral-large-2512", "temperature": 0.0, "max_tokens": 2048}
+# Layer 2
+AGGREGATORS = [
+    {"provider": "mistral", "model": "mistral-large-2512"},
+    {"provider": "mistral", "model": "ministral-14b-2512"},
+    {"provider": "mistral", "model": "magistral-medium-2509"},
+]
 
 # ==============================
 # Output Management
@@ -128,7 +137,7 @@ def main():
                 tracker = SampleAPICallTracker()  
                 question, img_path = create_question(sample, args.dataset)
                 
-                final_decision = run_moa(question, PROPOSER_LAYERS, AGGREGATOR, SYNTHESIZE_PROMPT, return_intermediate=False, log=log)
+                final_decision = run_moa(question, PROPOSER_LAYERS, AGGREGATORS, log=log, tracker=tracker)
                 
                 sample_api_calls = tracker.total_calls()
                 
@@ -258,7 +267,7 @@ def main():
                 
                 log(f"Question: {question}")
                 
-                final_decision = run_moa(question, PROPOSER_LAYERS, AGGREGATOR, SYNTHESIZE_PROMPT, return_intermediate=False, log=log)
+                final_decision = run_moa(question, PROPOSER_LAYERS, AGGREGATORS, log=log, tracker=tracker)
                 
                 sample_api_calls = tracker.total_calls()
                 
