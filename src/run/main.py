@@ -8,7 +8,6 @@ import threading
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Allow running as a script by adding the project root to sys.path.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
