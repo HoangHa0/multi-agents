@@ -180,12 +180,12 @@ def run_moa(
     results = run_layer(proposer_layers[0], None, question)
     all_layer_results.append(results)
     
-    log(f"\n[INFO] LAYER 1: INVESTIGATION\n")
+    log(f"\n[INFO] LAYER 1: INVESTIGATION")
     for agent_index, output in enumerate(results, start=1):
-        log(f"\nAgent {agent_index}: {output}\n")
+        log(f"\nAgent {agent_index}: {output}")
 
     # Layer 2 - Debate and Synthesis
-    log(f"\n[INFO] LAYER 2: DEBATE & AGGREGATION\n")
+    log(f"\n\n[INFO] LAYER 2: DEBATE & AGGREGATION")
     investigation_output = _pack(results)
     user_query = f"[DEBATE REQUIREMENTS]\n{debate_prompt}\n[INVESTIGATION OUTPUTS]:\n{investigation_output}"
     final_decision = process_query(

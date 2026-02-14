@@ -150,7 +150,7 @@ class Agent:
     def chat(self, message, img_path=None):
         if self.provider == 'gemini':
             self.messages.append(types.Content(role="user", parts=[types.Part(text=message)]))
-            for attempt in range(10):
+            for attempt in range(3):
                 try:
                     self._chat = self.client.chats.create(
                         model=self.model_info,
@@ -201,8 +201,9 @@ class Agent:
                         self.api_calls += 1
                         Agent.total_api_calls += 1
                     
-                    self.messages.append(AssistantMessage(content=remove_mistral_thinking(response.choices[0].message.content)))
-                    return response.choices[0].message.content
+                    text = remove_mistral_thinking(response.choices[0].message.content)
+                    self.messages.append(AssistantMessage(content=text))
+                    return text
                 except Exception as e:
                     print(f"Retrying due to: {e}")
                     time.sleep(2 ** attempt)  # Exponential backoff
@@ -546,7 +547,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         resp = agent.chat(prompt, img_path=None)
         opinions[agent.role] = resp
         # Print like the original: include agent number + emoji + role
-        log(f" Agent {idx+1} ({agent_emoji[idx]} {agent.role}) : {resp}")
+        log(f" Agent {idx+1} ({agent_emoji[idx]} {agent.role}):\n{resp}")
 
     # Collaborative decision making rounds
     log("\n[INFO] Step 3. Collaborative Decision Making")
@@ -737,7 +738,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
                 for dst, msg in dsts.items():
                     conversation_history += f"  {src} → {dst}:\n    {msg}\n"
     
-    log(f"\n[DEBUG] Full Conversation History:\n{conversation_history}")
+    # log(f"\n[DEBUG] Full Conversation History:\n{conversation_history}")
     
     final_decision = decision_maker.temp_responses(
         "You are reviewing the final decision from a multidisciplinary team discussion. "

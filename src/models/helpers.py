@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from dotenv import load_dotenv
 from typing import Any, List
 
@@ -49,7 +50,7 @@ def _mistral_rr_start_index() -> int:
         return idx
 
 
-def is_rate_limited_mistral(e: Exception) -> bool:
+def _is_rate_limited_mistral(e: Exception) -> bool:
     """
     Best-effort 429 detection across Mistral SDK versions.
     """
@@ -59,19 +60,22 @@ def is_rate_limited_mistral(e: Exception) -> bool:
 
 class _MistralRRChatProxy:
 	"""
-    Proxy so callers can keep using client.chat.complete(...).
-    """
+	Proxy so callers can keep using client.chat.complete(...).
+	"""
 	def __init__(self, parent):
 		self._parent = parent
-	
+
 	def complete(self, **kwargs):
 		return self._parent._complete(**kwargs)
 
 
+_MISTRAL_MAX_ROTATION_CYCLES = 10
+_MISTRAL_COOLDOWN_S = 60
+
 class MistralRoundRobinClient:
 	"""
-    Round-robin across multiple Mistral API keys; on failure, try next key.
-    """
+	Round-robin across multiple Mistral API keys; on failure, try next key.
+	"""
 
 	def __init__(self, api_keys: List[str]):
 		if not api_keys:
@@ -82,21 +86,26 @@ class MistralRoundRobinClient:
 	def _complete(self, **kwargs):
 		last_exc = None
 		n = len(self._clients)
-		start = _mistral_rr_start_index()
 
-		for i in range(n):
-			idx = (start + i) % n
-			try:
-				return self._clients[idx].chat.complete(**kwargs)
-			except SDKError as e:
-				last_exc = e
-				if is_rate_limited_mistral(e):
-					continue
-				raise
-			except Exception as e:
-				last_exc = e
+		for cycle in range(_MISTRAL_MAX_ROTATION_CYCLES):
+			start = _mistral_rr_start_index()
+			
+			all_rate_limited = True
+			for i in range(n):
+				idx = (start + i) % n
+				try:
+					return self._clients[idx].chat.complete(**kwargs)
+				except Exception as e:
+					last_exc = e
+					if not _is_rate_limited_mistral(e):
+						all_rate_limited = False
+			
+			if all_rate_limited:
+				time.sleep(_MISTRAL_COOLDOWN_S)
 				continue
-
+			
+			break
+				
 		if last_exc:
 			raise last_exc
 		raise RuntimeError("No Mistral clients available.")
