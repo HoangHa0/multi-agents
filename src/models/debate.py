@@ -577,9 +577,9 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         role_txt = (m.group('role') if m else (agent or '')).strip()
         desc_txt = ((m.group('desc') or '') if m else '').strip()
         if desc_txt:
-            log(f"Agent {idx+1} ({agent_emoji[idx]} {role_txt}): {desc_txt}")
+            log(f"\nAgent {idx+1} ({agent_emoji[idx]} {role_txt}): {desc_txt}")
         else:
-            log(f"Agent {idx+1} ({agent_emoji[idx]}): {role_txt}")
+            log(f"\nAgent {idx+1} ({agent_emoji[idx]}): {role_txt}")
             
 
     # Moderator (consensus checking)
@@ -645,7 +645,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         log(f'{myTable}\n')
 
     # Initial opinions
-    log("[INFO] Step 2. Initial Opinions")
+    log("\n\n[INFO] Step 2. Initial Opinions")
     opinions = {}
     for idx, agent in enumerate(medical_agents):
         prompt = (
@@ -655,10 +655,10 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         resp = agent.chat(prompt, img_path=None)
         opinions[agent.role] = resp
         # Print like the original: include agent number + emoji + role
-        log(f" Agent {idx+1} ({agent_emoji[idx]} {agent.role}) : {resp}")
+        log(f"\n Agent {idx+1} ({agent_emoji[idx]} {agent.role}) : {resp}")
 
     # Collaborative decision making rounds
-    log("\n[INFO] Step 3. Collaborative Decision Making")
+    log("\n\n[INFO] Step 3. Collaborative Decision Making")
     final_answers = dict(opinions)
 
     for r in range(1, num_rounds + 1):
@@ -669,7 +669,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         log(f"== {round_name} ==")
 
         # Participatory debate (T turns)
-        log("[INFO] Participatory Debate")
+        log("\n\n[INFO] Participatory Debate")
         
         num_yes_total = 0
         for t in range(1, num_turns + 1):
@@ -730,9 +730,9 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
                     num_yes_total += 1
                 else:
                     # "NO" path
-                    log(f" Agent {idx+1} ({agent_emoji[idx]} {agent.role}): \U0001F910")
+                    log(f"\n Agent {idx+1} ({agent_emoji[idx]} {agent.role}): \U0001F910")
                 
-            log(f"\n[DEBUG] Current agent chat history for {round_name}, {turn_name}:\n" + 
+            log(f"\n\n[DEBUG] Current agent chat history for {round_name}, {turn_name}:\n" + 
                 "\n".join([f"{idx}. {agent.role} history:\n{agent.messages}" for idx, agent in enumerate(medical_agents)]))
                 
             if num_yes == 0:
@@ -740,7 +740,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
                 break
 
             # Print summary table for this turn only
-            log("\n[INFO] Summary Table")
+            log("\n\n[INFO] Summary Table\n")
             _print_summary_table(interaction_log[round_name][turn_name], len(medical_agents))
 
         if num_yes_total == 0:
@@ -763,7 +763,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         final_answers = tmp_final_answer
         
         # Moderator consensus check (moderator decides if another round is needed)
-        log("\n[INFO] Moderator Consensus Check")
+        log("\n\n[INFO] Moderator Consensus Check")
         answers_text = "".join(f"[{role}] {ans}\n" for role, ans in final_answers.items())
         moderator_consensus = moderator.chat(
             "You are moderating the team. Decide whether the team has reached consensus on the final option.\n"
@@ -789,12 +789,12 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         log(f" \U0001F468\u200D\u2696\uFE0F Moderator consensus check: {'YES' if consensus_yes else 'NO'}")
 
         if consensus_yes:
-            log("\n[INFO] Consensus reached! Ending discussion.")
+            log("\n\n[INFO] Consensus reached! Ending discussion.")
             break
 
         # Early stopping mechanism
         # Check if agents agree to continue
-        log("\n[INFO] Vote to continue discussion")
+        log("\n\n[INFO] Vote to continue discussion")
         continue_votes = 0
         for agent in medical_agents:
             vote = agent.chat(
@@ -810,23 +810,23 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
 
         # If majority say NO, then we stop regardless of consensus
         if continue_votes <= len(medical_agents) // 2:
-            log("\n[INFO] Agents voted to stop discussion.")
+            log("\n\n[INFO] Agents voted to stop discussion.")
             break
         
-        log(f"\n[DEBUG] Current agent chat history for {round_name}:\n" + 
+        log(f"\n\n[DEBUG] Current agent chat history for {round_name}:\n" + 
             "\n".join([f"{idx}. {agent.role} history:\n{agent.messages}" for idx, agent in enumerate(medical_agents)]))
 
         # Moderator provides feedback for next round if not converged
-        log("\n[INFO] Disagreement detected")
+        log("\n\n[INFO] Disagreement detected")
 
         # Next round starts from the agents' last answers
         opinions = dict(final_answers)
         
-        log(f"\n[DEBUG] End of {round_name} chat opinions:\n" +
+        log(f"\n\n[DEBUG] End of {round_name} chat opinions:\n" +
             "\n".join([f"{idx}. {agent.role} opinion:\n{opinions[agent.role]}" for idx, agent in enumerate(medical_agents)]))
 
     # Final decision maker (review all opinions)
-    log("\n[INFO] Step 4. Final Decision")
+    log("\n\n[INFO] Step 4. Final Decision")
 
     decision_maker = Agent(
         "You are a final medical decision maker who reviews all opinions from different medical experts and their conversation history to make the final decision.",
@@ -846,7 +846,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
                 for dst, msg in dsts.items():
                     conversation_history += f"  {src} → {dst}:\n    {msg}\n"
     
-    log("\n[DEBUG] Full Conversation History:\n" + conversation_history)
+    log(f"\n\n[DEBUG] Full Conversation History:\n{conversation_history}")
     
     final_decision = decision_maker.temp_responses(
         "You are reviewing the final decision from a multidisciplinary team discussion. "

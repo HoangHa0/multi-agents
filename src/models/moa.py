@@ -222,7 +222,7 @@ def _call_mistral(agent: Dict[str, Any], user_prompt: str, system_prompt: str) -
             {"role": "user", "content": user_prompt},
         ],
         temperature=agent.get("temperature", 0.7),
-        max_tokens=agent.get("max_tokens", 512),
+        max_tokens=agent.get("max_tokens", 2048),
     )
     return resp.choices[0].message.content
 
@@ -314,17 +314,19 @@ def run_moa(
     results = run_layer(proposer_layers[0], None, question)
     all_layer_results.append(results)
     
-    log(f"\n[INFO] Layer 1 outputs:")
+    log(f"\n[INFO] LAYER 1: INVESTIGATION\n")
     for agent_index, output in enumerate(results, start=1):
-        log(f"Agent {agent_index}: {output}\n")
+        log(f"\nAgent {agent_index}: {output}\n")
 
     # Layer 2 - Debate and Synthesis
+    log(f"\n[INFO] LAYER 2: DEBATE & AGGREGATION\n")
     investigation_output = _pack(results)
     user_query = f"[DEBATE REQUIREMENTS]\n{debate_prompt}\n[INVESTIGATION OUTPUTS]:\n{investigation_output}"
     final_decision = process_query(
         question=question,
         aggregators=aggregators, 
         user_query=user_query,
+        log=log
     )
     
     log(f"\n[INFO] Final answer:\n{final_decision}\n")

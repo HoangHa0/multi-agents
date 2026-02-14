@@ -8,10 +8,16 @@ import threading
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Allow running as a script by adding the project root to sys.path.
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from src.data.load_questions import load_data, create_question
 from src.utils.logging import Logger, _atomic_json_dump, make_log_func
 from src.models.moa import SYNTHESIZE_PROMPT, run_moa
- 
+  
+    
 # ==============================
 # Layer Configuration
 # ==============================
