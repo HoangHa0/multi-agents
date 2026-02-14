@@ -4,7 +4,7 @@ import time
 from dotenv import load_dotenv
 from typing import Any, List
 
-from mistralai import Mistral, SDKError
+from mistralai import Mistral
 from openai import OpenAI
 from google import genai
 from google.genai import types

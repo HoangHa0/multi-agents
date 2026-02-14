@@ -105,12 +105,12 @@ def main():
     if start_no > 0:
         print(f"[INFO] Resuming from sample index {start_no} (already saved {start_no} results).")
 
-    # Keep a tiny progress file too (helpful if output gets edited)
+    # Keep a tiny progress file (helpful if output gets edited)
     _atomic_json_dump({"next_index": start_no}, progress_path)
 
     test_qa, _ = load_data(args.dataset)
 
-    # Randomly select test samples for quicker testing (remove this part for full eval)
+    # Randomly select test samples for quicker testing 
     if args.seed is not None:
         random.seed(args.seed)
         
