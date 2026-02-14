@@ -280,18 +280,6 @@ class Agent:
             recipient.messages.append(UserMessage(content=incoming_msg))
         
         return content
-
-    @classmethod
-    def get_total_api_calls(cls):
-        """Get total API calls across all agents (thread-safe)."""
-        with cls._api_calls_lock:
-            return cls.total_api_calls
-    
-    @classmethod
-    def reset_total_api_calls(cls):
-        """Reset total API call counter (thread-safe)."""
-        with cls._api_calls_lock:
-            cls.total_api_calls = 0
     
     def get_api_calls(self):
         """Get API calls for this agent instance."""

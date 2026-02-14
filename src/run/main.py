@@ -16,6 +16,7 @@ if PROJECT_ROOT not in sys.path:
 from src.data.load_questions import load_data, create_question
 from src.utils.logging import Logger, _atomic_json_dump, make_log_func
 from src.models.moa import SYNTHESIZE_PROMPT, run_moa
+from src.models.helpers import SampleAPICallTracker
   
     
 # ==============================
@@ -124,9 +125,12 @@ def main():
             
             try:
                 log(f"[INFO] Processing sample {no}")
+                tracker = SampleAPICallTracker()  
                 question, img_path = create_question(sample, args.dataset)
                 
                 final_decision = run_moa(question, PROPOSER_LAYERS, AGGREGATOR, SYNTHESIZE_PROMPT, return_intermediate=False, log=log)
+                
+                sample_api_calls = tracker.total_calls()
                 
                 if args.dataset == 'medqa':
                     result = {
@@ -136,12 +140,14 @@ def main():
                         'answer': sample['answer'],
                         'options': sample['options'],
                         'response': final_decision,
+                        'api_calls': sample_api_calls,
                     }
                 else:
                     result = {
                         'index': no,
                         'question': question,
                         'response': final_decision,
+                        'api_calls': sample_api_calls,
                     }
 
                 log(f"\n[INFO] Sample {no} completed successfully")
@@ -247,11 +253,14 @@ def main():
                 log(f"\n\n[INFO] no: {no}")
 
             try:
+                tracker = SampleAPICallTracker()
                 question, img_path = create_question(sample, args.dataset)
                 
                 log(f"Question: {question}")
                 
                 final_decision = run_moa(question, PROPOSER_LAYERS, AGGREGATOR, SYNTHESIZE_PROMPT, return_intermediate=False, log=log)
+                
+                sample_api_calls = tracker.total_calls()
                 
                 if args.dataset == 'medqa':
                     results.append({
@@ -260,11 +269,13 @@ def main():
                         'answer': sample['answer'],
                         'options': sample['options'],
                         'response': final_decision,
+                        'api_calls': sample_api_calls,
                     })
                 else:
                     results.append({
                         'question': question,
                         'response': final_decision,
+                        'api_calls': sample_api_calls,
                     })
 
                 # Save after each successful sample
