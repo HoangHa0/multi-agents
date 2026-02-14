@@ -194,20 +194,52 @@ def _get_gemini_client():
 
 
 # ============================
-# Logging helper
+# Robust helpers
 # ============================
 
 # Default no-op logger
 def _noop_log(msg):
     pass 
 
-# ============================
-# Prompt helpers
-# ============================
-
+# Prompt helper
 def _pack(prev_responses: List[str]) -> str:
     """Pack previous responses into a single string."""
     return "\n".join([f"Agent {i+1}. {r}" for i, r in enumerate(prev_responses)])
+
+# Removing thinking traces for reasoning models
+def _remove_mistral_thinking(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "thinking":
+                    continue
+                text = item.get("text") or item.get("content") or ""
+                if text:
+                    parts.append(text)
+                continue
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if getattr(item, "type", None) == "thinking":
+                continue
+            text = getattr(item, "text", None)
+            if text is not None:
+                parts.append(text)
+            else:
+                parts.append(str(item))
+        return "".join(parts)
+
+    text = getattr(content, "text", None)
+    if text is not None:
+        return text
+    return str(content)
+
 
 # ==========================
 # Provider calls
@@ -222,9 +254,9 @@ def _call_mistral(agent: Dict[str, Any], user_prompt: str, system_prompt: str) -
             {"role": "user", "content": user_prompt},
         ],
         temperature=agent.get("temperature", 0.7),
-        max_tokens=agent.get("max_tokens", 2048),
     )
-    return resp.choices[0].message.content
+    
+    return _remove_mistral_thinking(resp.choices[0].message.content)
 
 
 def _call_openai(agent: Dict[str, Any], user_prompt: str, system_prompt: str) -> str:
@@ -236,7 +268,6 @@ def _call_openai(agent: Dict[str, Any], user_prompt: str, system_prompt: str) ->
             {"role": "user", "content": user_prompt},
         ],
         temperature=agent.get("temperature", 0.7),
-        max_tokens=agent.get("max_tokens", 512),
     )
     return resp.choices[0].message.content
 
@@ -247,7 +278,6 @@ def _call_gemini(agent: Dict[str, Any], user_prompt: str, system_prompt: str) ->
     config = types.GenerateContentConfig(
         system_instruction=(system_prompt or agent.get("system", "")) or None,
         temperature=agent.get("temperature", 0.7),
-        max_output_tokens=agent.get("max_tokens", 512),
     )
 
     resp = client.models.generate_content(
@@ -262,7 +292,7 @@ def call(agent: Dict[str, Any], system_prompt: str, user_prompt: str) -> str:
 
     Agent fields:
       - provider: "mistral" | "openai" | "gemini" (default "mistral")
-      - model, temperature, max_tokens
+      - model, temperature
       - retries (default 6), backoff (default 1.0)
     """
     provider = (agent.get("provider") or "mistral").lower()
