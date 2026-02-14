@@ -13,3 +13,4 @@ __pypackages__/
 # Others
 .notes
 src/run/test.py
+logs/
