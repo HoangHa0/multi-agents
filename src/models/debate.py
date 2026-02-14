@@ -33,7 +33,7 @@ _MISTRAL_API_KEYS = [k for k in _MISTRAL_API_KEYS if k]
 
 _mistral_rr_counter = [0]
 _mistral_rr_lock = threading.Lock()
-_MISTRAL_MAX_RETRIES = 0
+_MISTRAL_MAX_RETRIES = 10
 _MISTRAL_RETRY_SLEEP_S = 1.0
 
 
@@ -120,38 +120,6 @@ def _get_mistral_client():
 def _noop_log(msg):
     pass 
 
-# Model distribution helper
-def distribute_models(model_list, num_agents):
-    """
-    Distribute models equally among agents.
-    
-    Args:
-        model_list: List of model names (e.g., ['gpt-4o-mini', 'gemini-2.5-flash-lite', 'gemini-2.5-pro'])
-        num_agents: Number of agents to distribute models to
-    
-    Returns:
-        List of model names for each agent, distributed as evenly as possible
-        
-    Examples:
-        - If models=['A', 'B', 'C'] and num_agents=3, returns ['A', 'B', 'C']
-        - If models=['A', 'B', 'C'] and num_agents=5, returns ['A', 'B', 'C', 'A', 'B']
-        - If models=['A'] and num_agents=3, returns ['A', 'A', 'A']
-        - If models=['A', 'B'] and num_agents=4, returns ['A', 'B', 'A', 'B']
-    """
-    if not model_list:
-        return ['gpt-4o-mini'] * num_agents  # Fallback to default
-    
-    if len(model_list) == 1:
-        # If only one model, use it for all agents
-        return [model_list[0]] * num_agents
-    
-    # Distribute models in round-robin fashion for balanced distribution
-    distributed_models = []
-    for i in range(num_agents):
-        distributed_models.append(model_list[i % len(model_list)])
-    
-    return distributed_models
-
 # Robust regex helpers 
 _EXPERT_LINE_RE = re.compile(r'^\s*(?P<expert>.+?)\s*$', re.IGNORECASE)
 _EXPERT_ROLE_DESC_RE = re.compile(r'^\s*(?:\d+\.\s*)?(?P<role>.+?)(?:\s*-\s*(?P<desc>.+))?\s*$')
@@ -232,9 +200,10 @@ class Agent:
     total_api_calls = 0
     _api_calls_lock = threading.Lock()  # Thread-safe lock for API call counting
     
-    def __init__(self, instruction, role, examplers=None, model_info='mistral-large-2512', img_path=None, tracker=None):
+    def __init__(self, instruction, role, examplers=None, provider='mistral', model_info='mistral-large-2512', img_path=None, tracker=None):
         self.instruction = instruction
         self.role = role
+        self.provider = provider
         self.model_info = model_info
         self.img_path = img_path
         self.api_calls = 0  # Instance-level counter
@@ -245,8 +214,8 @@ class Agent:
             except Exception:
                 pass
 
-        if self.model_info in ['gemini-2.5-flash-lite', 'gemini-2.5-pro']:
-            self.client = genai.Client(api_key=os.environ['GENAI_API_KEY'])
+        if self.provider == 'gemini':
+            self.client = genai.Client(api_key=os.environ['GEMINI_API_KEY'])
             self.messages = []
             
             # Map examplers to Gemini history format
@@ -256,7 +225,7 @@ class Agent:
                     reason_prefix = f"Let's think step by step. {exampler['reason']} " if 'reason' in exampler else ""
                     self.messages.append(types.Content(role="model", parts=[types.Part(text=reason_prefix + exampler['answer'])]))
         
-        elif self.model_info in ['gpt-3.5', 'gpt-4', 'gpt-4o', 'gpt-4o-mini']:
+        elif self.provider == 'openai':
             self.client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
             self.messages = [
                 {"role": "system", "content": instruction},
@@ -266,7 +235,7 @@ class Agent:
                     self.messages.append({"role": "user", "content": exampler['question']})
                     self.messages.append({"role": "assistant", "content":  ("Let's think step by step. " + exampler['reason'] + " "  if 'reason' in exampler else '') + exampler['answer']})
                     
-        elif self.model_info in ['mistral-large-2512', 'mistral-small-2506', 'ministral-14b-2512', 'ministral-8b-2512', 'ministral-3b-2512']:
+        elif self.provider == 'mistral':
             # Uses round-robin across multiple keys if configured.
             self.client = _get_mistral_client()
             self.messages = [
@@ -280,8 +249,8 @@ class Agent:
         # log(f"[DEBUG] Print out the messages for Agent {self.messages}")
 
     def chat(self, message, img_path=None):
-        self.messages.append(types.Content(role="user", parts=[types.Part(text=message)]))
-        if self.model_info in ['gemini-2.5-flash-lite', 'gemini-2.5-pro']:
+        if self.provider == 'gemini':
+            self.messages.append(types.Content(role="user", parts=[types.Part(text=message)]))
             for attempt in range(10):
                 try:
                     # Initialize persistent chat session
@@ -304,16 +273,11 @@ class Agent:
                     time.sleep(2 ** attempt)  # Exponential backoff
                     continue
 
-        elif self.model_info in ['gpt-3.5', 'gpt-4', 'gpt-4o', 'gpt-4o-mini']:
+        elif self.provider == 'openai':
             self.messages.append({"role": "user", "content": message})
             
-            if self.model_info == 'gpt-3.5':
-                model_name = "gpt-3.5-turbo"
-            else:
-                model_name = "gpt-4o-mini"
-
             response = self.client.chat.completions.create(
-                model=model_name,
+                model=self.model_info,
                 messages=self.messages
             )
             
@@ -325,7 +289,7 @@ class Agent:
             self.messages.append({"role": "assistant", "content": response.choices[0].message.content})
             return response.choices[0].message.content
         
-        elif self.model_info in ['mistral-large-2512', 'mistral-small-2506', 'ministral-14b-2512', 'ministral-8b-2512', 'ministral-3b-2512']:            
+        elif self.provider == 'mistral':
             self.messages.append(UserMessage(content=message))
             for attempt in range(3):
                 try:                    
@@ -347,19 +311,15 @@ class Agent:
                     continue
                         
     def temp_responses(self, message, temperatures=[0.0], img_path=None):
-        if self.model_info in ['gpt-3.5', 'gpt-4', 'gpt-4o', 'gpt-4o-mini']:      
+        if self.provider == 'openai':
             self.messages.append({"role": "user", "content": message})
             
             temperatures = list(set(temperatures))
             
             responses = {}
             for temperature in temperatures:
-                if self.model_info == 'gpt-3.5':
-                    model_info = 'gpt-3.5-turbo'
-                else:
-                    model_info = 'gpt-4o-mini'
                 response = self.client.chat.completions.create(
-                    model=model_info,
+                    model=self.model_info,
                     messages=self.messages,
                     temperature=temperature,
                 )
@@ -375,7 +335,7 @@ class Agent:
                 
             return responses
         
-        elif self.model_info in ['gemini-2.5-flash-lite', 'gemini-2.5-pro']:
+        elif self.provider == 'gemini':
             self.messages.append(types.Content(role="user", parts=[types.Part(text=message)]))
             temperatures = list(set(temperatures))
             responses = {}
@@ -405,7 +365,7 @@ class Agent:
             # self.messages.append(types.Content(role="model", parts=[types.Part(text=responses)]))
             return responses
         
-        elif self.model_info in ['mistral-large-2512', 'mistral-small-2506', 'ministral-14b-2512', 'ministral-8b-2512', 'ministral-3b-2512']:
+        elif self.provider == 'mistral':
             self.messages.append(UserMessage(content=message))
             temperatures = list(set(temperatures))
             responses = {}
@@ -443,13 +403,13 @@ class Agent:
 
         incoming_msg = f"Message from {self.role}: {content}"
 
-        if recipient.model_info in ['gpt-3.5', 'gpt-4', 'gpt-4o', 'gpt-4o-mini']:
+        if recipient.provider == 'openai':
             recipient.messages.append({"role": "user", "content": incoming_msg})
         
-        elif recipient.model_info in ['gemini-2.5-flash-lite', 'gemini-2.5-pro']:
+        elif recipient.provider == 'gemini':
             recipient.messages.append(types.Content(role="user", parts=[types.Part(text=incoming_msg)]))
             
-        elif recipient.model_info in ['mistral-large-2512', 'mistral-small-2506', 'ministral-14b-2512', 'ministral-8b-2512', 'ministral-3b-2512']:
+        elif recipient.provider == 'mistral':
             recipient.messages.append(UserMessage(content=incoming_msg))
         
         return content
@@ -519,7 +479,7 @@ def parse_group_info(group_info):
     
     return parsed_info
 
-def process_query(question, args, log=None, tracker=None):
+def process_query(question, aggregators, user_query, log=None, tracker=None):
     """
     Intermediate (MDT) setting:
       - Recruit N experts 
@@ -528,7 +488,7 @@ def process_query(question, args, log=None, tracker=None):
           * participatory debate (agents optionally message each other)
           * agents update final answers for the round
           * consensus check; if not reached, continue to next round
-      - Final decision maker reviews all agent answers and produces the final answer
+      - Final decision maker reviews all agent answers and produces the final answer by majority vote.
     """
     if log is None:
         log = _noop_log
@@ -538,8 +498,6 @@ def process_query(question, args, log=None, tracker=None):
         tracker = SampleAPICallTracker()
         created_tracker = True
     
-    # Create moderator if not provided (when difficulty is not 'adaptive')
-
     moderator = Agent(
         instruction='You are a medical expert who conducts initial assessment and moderates the discussion.',
         role='moderator',
@@ -549,7 +507,7 @@ def process_query(question, args, log=None, tracker=None):
     
     log("\n[INFO] Step 1. Expert Recruitment")
 
-    num_agents = 3 # You can adjust this number as needed
+    num_agents = len(aggregators) 
 
     def _recruit_and_parse_intermediate():
         recruiter = Agent(instruction="You are an experienced medical expert who recruits a group of experts with diverse identity and ask them to discuss and solve the given medical query.", 
@@ -598,8 +556,9 @@ def process_query(question, args, log=None, tracker=None):
         description = ((m.group('desc') or '') if m else '').strip().lower()
         agent_list += f"Agent {i+1}: {agent_role} - {description}\n"
 
-    # Distribute models equally among agents
-    agent_models = distribute_models(args.model, len(agents_data))
+    # Agent models
+    agent_provider = [aggregator["provider"] for aggregator in aggregators]
+    agent_models = [aggregator["model"] for aggregator in aggregators]
 
     agent_dict = {}
     medical_agents = []
@@ -608,8 +567,8 @@ def process_query(question, args, log=None, tracker=None):
         agent_role = (m.group('role') if m else (agent or '')).strip().lower()
         description = ((m.group('desc') or '') if m else '').strip().lower()
 
-        inst_prompt = f"You are a {agent_role} who {description}. Your job is to collaborate with other medical experts in a team."
-        _agent = Agent(instruction=inst_prompt, role=agent_role, model_info=agent_models[idx], tracker=tracker)
+        inst_prompt = f"[ROLE]\nYou are a {agent_role} who {description}. Your job is to collaborate with other medical experts in a team.\n" + user_query
+        _agent = Agent(instruction=inst_prompt, role=agent_role, provider=agent_provider[idx], model_info=agent_models[idx], tracker=tracker)
         agent_dict[agent_role] = _agent
         medical_agents.append(_agent)
 
@@ -690,8 +649,8 @@ def process_query(question, args, log=None, tracker=None):
     opinions = {}
     for idx, agent in enumerate(medical_agents):
         prompt = (
-            f"Please return your answer to the medical query among the option provided.\n\n"
-            f"Question: {question}\n\n"
+            f"Provide your current answer using the Answer Card format (from your system instructions).\n"
+            f"Question: {question}"
         )
         resp = agent.chat(prompt, img_path=None)
         opinions[agent.role] = resp
@@ -709,8 +668,6 @@ def process_query(question, args, log=None, tracker=None):
 
         log(f"== {round_name} ==")
 
-        assessment = "".join(f"({k}): {v}\n" for k, v in opinions.items())
-
         # Participatory debate (T turns)
         log("[INFO] Participatory Debate")
         
@@ -722,14 +679,18 @@ def process_query(question, args, log=None, tracker=None):
 
             num_yes = 0
             for idx, agent in enumerate(medical_agents):
+                your_opinion = opinions.get(agent.role, "No opinion yet.")
+                other_opinions = {k: v for k, v in opinions.items() if k != agent.role}
                 participate = agent.chat(
-                    "Given the opinions from other medical agents, indicate whether you want to talk to any expert (yes/no). "
-                    "If not, provide your opinion.\n\n"
-                    f"Opinions:\n{assessment}",
+                    "Given your current opinion and opinions from other medical agents, "
+                    "indicate whether you want to talk to any expert. "
+                    "Return EXACTLY one token: YES or NO. No other text.\n\n"
+                    f"Your current opinion: {your_opinion}\n\n"
+                    f"Other agents' opinions:\n{other_opinions}",
                     img_path=None
                 )
 
-                if re.search(r'(?i)\byes\b', (participate or "").strip()):                    
+                if participate.strip().upper() == "YES":
                     # Build filtered agent list (not including self)
                     filtered_agent_list = ""
                     for i, agent_data in enumerate(agents_data):
@@ -747,13 +708,13 @@ def process_query(question, args, log=None, tracker=None):
                         img_path=None
                     )
                     chosen_experts = [int(ce) for ce in re.split(r'[^0-9]+', chosen_expert or '') if ce.strip().isdigit()]
-                    chosen_experts = [ce for ce in chosen_experts if 1 <= ce <= len(medical_agents)-1 and ce != (idx + 1)]  # valid and not self
+                    chosen_experts = [ce for ce in chosen_experts if 1 <= ce <= len(medical_agents) and ce != (idx + 1)]  # valid and not self
                     chosen_experts = list(dict.fromkeys(chosen_experts))  # unique, preserve order
 
                     for ce in chosen_experts:
                         recipient_agent = medical_agents[ce-1]
                         msg = agent.agent_talk(
-                            "Remind your medical expertise and leave your opinion to the expert you chose. "
+                            f"Remind your medical expertise as a {agent.role} and leave your opinion to the expert you chose: {recipient_agent.role}. "
                             "Deliver your opinion once you are confident and in a way to convince the other expert with a short reason.\n\n"
                             f"Question:\n{question}",
                             recipient=recipient_agent,
@@ -768,10 +729,7 @@ def process_query(question, args, log=None, tracker=None):
                     num_yes += 1
                     num_yes_total += 1
                 else:
-                    # "no" path: store updated opinion for the next turn/round
-                    if participate and participate.strip():
-                        opinions[agent.role] = participate
-                        assessment = "".join(f"({k}): {v}\n" for k, v in opinions.items())
+                    # "NO" path
                     log(f" Agent {idx+1} ({agent_emoji[idx]} {agent.role}): \U0001F910")
                 
             log(f"\n[DEBUG] Current agent chat history for {round_name}, {turn_name}:\n" + 
@@ -793,15 +751,17 @@ def process_query(question, args, log=None, tracker=None):
         tmp_final_answer = {}
         for agent in medical_agents:
             response = agent.chat(
-                "Now that you've interacted with other medical experts (and received moderator feedback if any), "
-                "remind your expertise and the comments from other experts and make your final answer to the given question.\n"
+                f"Now that you've interacted with other medical experts, "
+                f"remind your expertise as a {agent.role} and the comments from other experts, "
+                f"and provide your UPDATED answer using the Answer Card format.\n"
+                f"If you changed your Answer letter, include \"Previous answer: <letter>\" and \"Update reason: <reason>\"\n"
                 f"Question: {question}\n\n",
                 img_path=None
             )
             tmp_final_answer[agent.role] = response
 
         final_answers = tmp_final_answer
-
+        
         # Moderator consensus check (moderator decides if another round is needed)
         log("\n[INFO] Moderator Consensus Check")
         answers_text = "".join(f"[{role}] {ans}\n" for role, ans in final_answers.items())
@@ -886,37 +846,21 @@ def process_query(question, args, log=None, tracker=None):
                 for dst, msg in dsts.items():
                     conversation_history += f"  {src} → {dst}:\n    {msg}\n"
     
-    log("\n[DEBUG] Full Conversation History for Decision Maker:\n" + conversation_history)
+    log("\n[DEBUG] Full Conversation History:\n" + conversation_history)
     
     final_decision = decision_maker.temp_responses(
         "You are reviewing the final decision from a multidisciplinary team discussion. "
-        "Consider the experts' reasoning, the conversation history showing how they interacted and converged (or disagreed), "
-        "and their final answers to make an informed final decision.\n\n"
+        "You are not allowed to solve the question yourself."
+        "Your ONLY job is to aggregate the team's FINAL Answer Cards by majority vote. "
+        "If ties occur, choose the tied letter with the highest average Confidence (use the Confidence lines).\n"
         f"Question:\n{question}\n\n"
-        f"Conversation History:\n{conversation_history if conversation_history.strip() else '(No direct interactions occurred)'}\n\n"
         f"Experts' Final Answers:\n{answers_text}\n"
-        "Based on the conversation history and final answers, please make the final answer to the question by considering consensus and reasoning quality:\n"
         "Answer: ",
-        temperatures=[args.temperature] if hasattr(args, 'temperature') else [0.0],
+        temperatures=[0.0],
         img_path=None 
     )
-    
-    if not final_decision:
-        log("[WARN] Final decision contains error or is empty, retrying with reduced context...")
-        final_decision = decision_maker.temp_responses(
-            "You are reviewing the final decision from a multidisciplinary team discussion. "
-            "Consider the experts' reasoning, the conversation history showing how they interacted and converged (or disagreed), "
-            "and their final answers to make an informed final decision.\n\n"
-            f"Question:\n{question}\n\n"
-            f"Conversation History:\n{conversation_history[-6000:] if conversation_history.strip() else '(No direct interactions occurred)'}\n\n"
-            f"Experts' Final Answers:\n{answers_text}\n"
-            "Based on the conversation history and final answers, please make the final answer to the question by considering consensus and reasoning quality:\n"
-            "Answer: ",
-            temperatures=[args.temperature] if hasattr(args, 'temperature') else [0.0],
-            img_path=None 
-    )
             
-    log(f"\U0001F468\u200D\u2696\uFE0F  Moderator's final decision: {final_decision}")
+    log(f"\U0001F468\u200D\u2696\uFE0F  Moderator's final decision: {final_decision[0.0]}")
     
     if created_tracker:
         try:
@@ -924,5 +868,5 @@ def process_query(question, args, log=None, tracker=None):
         except Exception:
             pass
 
-    return final_decision
+    return final_decision[0.0]
 

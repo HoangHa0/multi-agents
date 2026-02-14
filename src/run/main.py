@@ -93,7 +93,7 @@ def main():
     # Keep a tiny progress file too (helpful if output gets edited)
     _atomic_json_dump({"next_index": start_no}, progress_path)
 
-    test_qa, examplers = load_data(args.dataset)
+    test_qa, _ = load_data(args.dataset)
 
     # Randomly select test samples for quicker testing (remove this part for full eval)
     if args.seed is not None:
@@ -124,6 +124,7 @@ def main():
                 
                 if args.dataset == 'medqa':
                     result = {
+                        'index': no,
                         'question': question,
                         'label': sample['answer_idx'],
                         'answer': sample['answer'],
@@ -132,6 +133,7 @@ def main():
                     }
                 else:
                     result = {
+                        'index': no,
                         'question': question,
                         'response': final_decision,
                     }
