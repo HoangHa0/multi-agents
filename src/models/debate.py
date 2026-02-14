@@ -624,7 +624,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
             img_path=None
         )
         
-        log(f" \U0001F468\u200D\u2696\uFE0F Moderator chat history for {round_name}:\n{moderator.messages}")
+        # log(f"[DEBUG] \U0001F468\u200D\u2696\uFE0F Moderator chat history for {round_name}:\n{moderator.messages}")
                 
         consensus_yes = bool(re.search(r'(?im)^\s*Consensus\s*:\s*YES\s*$', moderator_consensus or ''))
         consensus_no = bool(re.search(r'(?im)^\s*Consensus\s*:\s*NO\s*$', moderator_consensus or ''))
