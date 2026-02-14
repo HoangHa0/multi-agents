@@ -3,122 +3,23 @@ import re
 import time
 import random
 import threading
-from dotenv import load_dotenv
 from prettytable import PrettyTable 
+
 from google import genai
 from google.genai import types
 from openai import OpenAI
-from mistralai import Mistral, SystemMessage, UserMessage, AssistantMessage
+from mistralai import SystemMessage, UserMessage, AssistantMessage
 
-# -----------------------------------------
-# Mistral: round-robin API key rotation 
-# -----------------------------------------
-
-load_dotenv()
-
-_MISTRAL_API_KEYS = [
-    os.getenv("MISTRAL_API_KEY"),
-    os.getenv("MISTRAL_API_KEY_1"),
-    os.getenv("MISTRAL_API_KEY_2"),
-    os.getenv("MISTRAL_API_KEY_3"),
-    os.getenv("MISTRAL_API_KEY_4"),
-    os.getenv("MISTRAL_API_KEY_5"),
-    os.getenv("MISTRAL_API_KEY_6"),
-    os.getenv("MISTRAL_API_KEY_7"),
-    os.getenv("MISTRAL_API_KEY_8"),
-    os.getenv("MISTRAL_API_KEY_9"),
-    os.getenv("MISTRAL_API_KEY_10"),
-]
-_MISTRAL_API_KEYS = [k for k in _MISTRAL_API_KEYS if k]
-
-_mistral_rr_counter = [0]
-_mistral_rr_lock = threading.Lock()
-_MISTRAL_MAX_RETRIES = 10
-_MISTRAL_RETRY_SLEEP_S = 1.0
-
-
-def _mistral_rr_start_index() -> int:
-    """Thread-safe round-robin start index."""
-    with _mistral_rr_lock:
-        if not _MISTRAL_API_KEYS:
-            return 0
-        idx = _mistral_rr_counter[0] % len(_MISTRAL_API_KEYS)
-        _mistral_rr_counter[0] += 1
-        return idx
-
-
-class _MistralRRChatProxy:
-    """Proxy so callers can keep using client.chat.complete(...)."""
-
-    def __init__(self, parent):
-        self._parent = parent
-
-    def complete(self, **kwargs):
-        return self._parent._complete(**kwargs)
-
-
-class _MistralRoundRobinClient:
-    """Round-robin across multiple Mistral API keys; on failure, try next key."""
-
-    def __init__(self, api_keys):
-        if not api_keys:
-            raise ValueError(
-                "No Mistral API keys found. Set MISTRAL_API_KEY (and optionally MISTRAL_API_KEY_1..MISTRAL_API_KEY_10)."
-            )
-        self._clients = [Mistral(api_key=k) for k in api_keys]
-        self.chat = _MistralRRChatProxy(self)
-
-    def _complete(self, **kwargs):
-        last_exc = None
-        attempts = 0
-        n = len(self._clients)
-
-        while True:
-            start = _mistral_rr_start_index()
-            for i in range(n):
-                idx = (start + i) % n
-                try:
-                    return self._clients[idx].chat.complete(**kwargs)
-                except Exception as e:
-                    last_exc = e
-                    continue
-
-            attempts += 1
-            if _MISTRAL_MAX_RETRIES > 0 and attempts >= _MISTRAL_MAX_RETRIES:
-                break
-            time.sleep(_MISTRAL_RETRY_SLEEP_S)
-
-        if last_exc is not None:
-            raise last_exc
-        raise RuntimeError("Mistral round-robin client has no available clients.")
-
-
-_MISTRAL_RR_CLIENT_SINGLETON = None
-
-
-def _get_mistral_client():
-    """Return a Mistral client (demux to round-robin if multiple keys exist)."""
-    global _MISTRAL_RR_CLIENT_SINGLETON
-    if _MISTRAL_RR_CLIENT_SINGLETON is None:
-        if not _MISTRAL_API_KEYS:
-            raise ValueError(
-                "No Mistral API keys found. Set MISTRAL_API_KEY (and optionally MISTRAL_API_KEY_1..MISTRAL_API_KEY_10)."
-            )
-        # Preserve original behavior when only one key is provided.
-        if len(_MISTRAL_API_KEYS) == 1:
-            _MISTRAL_RR_CLIENT_SINGLETON = Mistral(api_key=_MISTRAL_API_KEYS[0])
-        else:
-            _MISTRAL_RR_CLIENT_SINGLETON = _MistralRoundRobinClient(_MISTRAL_API_KEYS)
-    return _MISTRAL_RR_CLIENT_SINGLETON
+from src.models.helpers import (
+    noop_log,
+    get_mistral_client,
+    remove_mistral_thinking
+)
 
 
 # -----------------------
 # Robustness helpers
 # -----------------------
-
-# Default no-op logger
-def _noop_log(msg):
-    pass 
 
 # Robust regex helpers 
 _EXPERT_LINE_RE = re.compile(r'^\s*(?P<expert>.+?)\s*$', re.IGNORECASE)
@@ -129,7 +30,7 @@ DEFAULT_LLM_RETRIES = 5
 
 def _retry_call(name, fn, max_tries=None, retry_exceptions=(IndexError,), sleep_s=None, log=None):
     if log is None:
-        log = _noop_log
+        log = noop_log
     """
     Retry a callable as the last resort when the LLM output (or downstream parsing) is brittle.
     This is intentionally lightweight so we don't change any parsing logic; we just re-ask.
@@ -150,7 +51,6 @@ def _retry_call(name, fn, max_tries=None, retry_exceptions=(IndexError,), sleep_
                 except Exception:
                     pass
         except Exception as e:
-            # Also retry on generic transient failures (API hiccups, etc.)
             last_err = e
             log(f"[WARN] {name} failed (attempt {attempt}/{max_tries}): {type(e).__name__}: {e}. Retrying...")
             if sleep_s:
@@ -179,7 +79,6 @@ class SampleAPICallTracker:
         with self._lock:
             self._agents.append(agent)
 
-    # Back-compat alias
     register = register_agent
 
     def total_calls(self):
@@ -206,7 +105,7 @@ class Agent:
         self.provider = provider
         self.model_info = model_info
         self.img_path = img_path
-        self.api_calls = 0  # Instance-level counter
+        self.api_calls = 0  
         self._tracker = tracker
         if self._tracker is not None:
             try:
@@ -237,7 +136,7 @@ class Agent:
                     
         elif self.provider == 'mistral':
             # Uses round-robin across multiple keys if configured.
-            self.client = _get_mistral_client()
+            self.client = get_mistral_client()
             self.messages = [
                 SystemMessage(content=instruction)
             ]
@@ -253,7 +152,6 @@ class Agent:
             self.messages.append(types.Content(role="user", parts=[types.Part(text=message)]))
             for attempt in range(10):
                 try:
-                    # Initialize persistent chat session
                     self._chat = self.client.chats.create(
                         model=self.model_info,
                         history=self.messages[:-1],  # Exclude latest user message for history
@@ -303,7 +201,7 @@ class Agent:
                         self.api_calls += 1
                         Agent.total_api_calls += 1
                     
-                    self.messages.append(AssistantMessage(content=response.choices[0].message.content))
+                    self.messages.append(AssistantMessage(content=remove_mistral_thinking(response.choices[0].message.content)))
                     return response.choices[0].message.content
                 except Exception as e:
                     print(f"Retrying due to: {e}")
@@ -360,9 +258,6 @@ class Agent:
                         time.sleep(2 ** attempt)  # Exponential backoff
                         continue
                                 
-            # OPTIONAL: If you want to "pick" one to actually save to history, 
-            # you would call self._chat.send_message(message) once at the end.
-            # self.messages.append(types.Content(role="model", parts=[types.Part(text=responses)]))
             return responses
         
         elif self.provider == 'mistral':
@@ -383,16 +278,13 @@ class Agent:
                             self.api_calls += 1
                             Agent.total_api_calls += 1
                         
-                        responses[temperature] = response.choices[0].message.content
+                        responses[temperature] = remove_mistral_thinking(response.choices[0].message.content)
                         break
                     except Exception as e:
                         print(f"Retrying due to: {e}")
                         time.sleep(2 ** attempt)  # Exponential backoff
                         continue
                                           
-            # OPTIONAL: If you want to "pick" one to actually save to history, 
-            # you would call self._chat.send_message(message) once at the end.
-            # self.messages.append(AssistantMessage(content=responses))
             return responses
         
     def agent_talk(self, message, recipient, img_path=None):
@@ -447,8 +339,7 @@ def parse_group_info(group_info):
         goal_full = re.sub(r'Group\s+\d+\s*-\s*', '', goal_full, flags=re.IGNORECASE).strip()
         parsed_info['group_goal'] = goal_full
     
-    # Parse members line by line - more robust for various LLM output formats
-    # Handles: "Member N: Role - Description", "Member N: **Role** - **Description**", etc.
+    # Parse members line by line. Handles: "Member N: Role - Description", "Member N: **Role** - **Description**", etc.
     lines = group_info.split('\n')
     for line in lines:
         # Match "Member N:" at the start of line (with optional markdown bullets/dashes)
@@ -491,7 +382,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
       - Final decision maker reviews all agent answers and produces the final answer by majority vote.
     """
     if log is None:
-        log = _noop_log
+        log = noop_log
     
     created_tracker = False
     if tracker is None:
@@ -577,9 +468,9 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         role_txt = (m.group('role') if m else (agent or '')).strip()
         desc_txt = ((m.group('desc') or '') if m else '').strip()
         if desc_txt:
-            log(f"\nAgent {idx+1} ({agent_emoji[idx]} {role_txt}): {desc_txt}")
+            log(f"Agent {idx+1} ({agent_emoji[idx]} {role_txt}): {desc_txt}")
         else:
-            log(f"\nAgent {idx+1} ({agent_emoji[idx]}): {role_txt}")
+            log(f"Agent {idx+1} ({agent_emoji[idx]}): {role_txt}")
             
 
     # Moderator (consensus checking)
@@ -645,7 +536,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         log(f'{myTable}\n')
 
     # Initial opinions
-    log("\n\n[INFO] Step 2. Initial Opinions")
+    log("\n[INFO] Step 2. Initial Opinions")
     opinions = {}
     for idx, agent in enumerate(medical_agents):
         prompt = (
@@ -655,10 +546,10 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         resp = agent.chat(prompt, img_path=None)
         opinions[agent.role] = resp
         # Print like the original: include agent number + emoji + role
-        log(f"\n Agent {idx+1} ({agent_emoji[idx]} {agent.role}) : {resp}")
+        log(f" Agent {idx+1} ({agent_emoji[idx]} {agent.role}) : {resp}")
 
     # Collaborative decision making rounds
-    log("\n\n[INFO] Step 3. Collaborative Decision Making")
+    log("\n[INFO] Step 3. Collaborative Decision Making")
     final_answers = dict(opinions)
 
     for r in range(1, num_rounds + 1):
@@ -669,7 +560,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         log(f"== {round_name} ==")
 
         # Participatory debate (T turns)
-        log("\n\n[INFO] Participatory Debate")
+        log("\n[INFO] Participatory Debate")
         
         num_yes_total = 0
         for t in range(1, num_turns + 1):
@@ -730,9 +621,9 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
                     num_yes_total += 1
                 else:
                     # "NO" path
-                    log(f"\n Agent {idx+1} ({agent_emoji[idx]} {agent.role}): \U0001F910")
+                    log(f" Agent {idx+1} ({agent_emoji[idx]} {agent.role}): \U0001F910")
                 
-            log(f"\n\n[DEBUG] Current agent chat history for {round_name}, {turn_name}:\n" + 
+            log(f"\n[DEBUG] Current agent chat history for {round_name}, {turn_name}:\n" + 
                 "\n".join([f"{idx}. {agent.role} history:\n{agent.messages}" for idx, agent in enumerate(medical_agents)]))
                 
             if num_yes == 0:
@@ -740,7 +631,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
                 break
 
             # Print summary table for this turn only
-            log("\n\n[INFO] Summary Table\n")
+            log("\n[INFO] Summary Table\n")
             _print_summary_table(interaction_log[round_name][turn_name], len(medical_agents))
 
         if num_yes_total == 0:
@@ -763,7 +654,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         final_answers = tmp_final_answer
         
         # Moderator consensus check (moderator decides if another round is needed)
-        log("\n\n[INFO] Moderator Consensus Check")
+        log("\n[INFO] Moderator Consensus Check")
         answers_text = "".join(f"[{role}] {ans}\n" for role, ans in final_answers.items())
         moderator_consensus = moderator.chat(
             "You are moderating the team. Decide whether the team has reached consensus on the final option.\n"
@@ -789,12 +680,12 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
         log(f" \U0001F468\u200D\u2696\uFE0F Moderator consensus check: {'YES' if consensus_yes else 'NO'}")
 
         if consensus_yes:
-            log("\n\n[INFO] Consensus reached! Ending discussion.")
+            log("\n[INFO] Consensus reached! Ending discussion.")
             break
 
         # Early stopping mechanism
         # Check if agents agree to continue
-        log("\n\n[INFO] Vote to continue discussion")
+        log("\n[INFO] Vote to continue discussion")
         continue_votes = 0
         for agent in medical_agents:
             vote = agent.chat(
@@ -810,23 +701,23 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
 
         # If majority say NO, then we stop regardless of consensus
         if continue_votes <= len(medical_agents) // 2:
-            log("\n\n[INFO] Agents voted to stop discussion.")
+            log("\n[INFO] Agents voted to stop discussion.")
             break
         
-        log(f"\n\n[DEBUG] Current agent chat history for {round_name}:\n" + 
+        log(f"\n[DEBUG] Current agent chat history for {round_name}:\n" + 
             "\n".join([f"{idx}. {agent.role} history:\n{agent.messages}" for idx, agent in enumerate(medical_agents)]))
 
         # Moderator provides feedback for next round if not converged
-        log("\n\n[INFO] Disagreement detected")
+        log("\n[INFO] Disagreement detected")
 
         # Next round starts from the agents' last answers
         opinions = dict(final_answers)
         
-        log(f"\n\n[DEBUG] End of {round_name} chat opinions:\n" +
+        log(f"\n[DEBUG] End of {round_name} chat opinions:\n" +
             "\n".join([f"{idx}. {agent.role} opinion:\n{opinions[agent.role]}" for idx, agent in enumerate(medical_agents)]))
 
     # Final decision maker (review all opinions)
-    log("\n\n[INFO] Step 4. Final Decision")
+    log("\n[INFO] Step 4. Final Decision")
 
     decision_maker = Agent(
         "You are a final medical decision maker who reviews all opinions from different medical experts and their conversation history to make the final decision.",
@@ -846,7 +737,7 @@ def process_query(question, aggregators, user_query, log=None, tracker=None):
                 for dst, msg in dsts.items():
                     conversation_history += f"  {src} → {dst}:\n    {msg}\n"
     
-    log(f"\n\n[DEBUG] Full Conversation History:\n{conversation_history}")
+    log(f"\n[DEBUG] Full Conversation History:\n{conversation_history}")
     
     final_decision = decision_maker.temp_responses(
         "You are reviewing the final decision from a multidisciplinary team discussion. "
